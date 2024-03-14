@@ -1,0 +1,245 @@
+---
+title: "TP noté - Introduction à la statistique spatiale"
+authors : SANE Mansour Kama
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## **Consignes:**
+
+**LE TP DURE 2H**
+
+- Le TP se fait seul(e). Le smartphone est interdit. Tous les documents (y compris les programmes des TP précédents) et internet sont autorisés. En revanche, toute communication et toute aide de type IA est interdite (Chatgpt ou Gemini en particulier) sous d'exclusion de l'examen. 
+
+- Vous travaillerez directement dans le sujet. Vous nommerez le programme de la manière suivante: Nom.Rmd. Pour rajouter des chuncks de code sous chaque question, vous pouvez utiliser le raccourci clavier CTRL+MAJ+I
+
+
+---
+
+
+0. Commencer par renseigner votre nom et prénom en face de "authors:" en haut du programme. Pour le TP, vous aurez besoin des packages suivants :
+
+
+```{r}
+library(dplyr)
+library(sf)
+library(mapsf)
+library(spdep)
+```
+
+
+### Exercice 1
+
+Nous disposons de données économiques sur la ville de New York. Les observations sont découpées en "Neighborhood Tabulation Areas" (NTA). Il s'agit d'un découpage utilisé pour le recensement aux Etats-Unis. 
+
+1. Importer le fichier econ_2016acs5yr_nta.xlsx avec la fonction readxl::read_xlsx(). Ne conserver que les colonnes GeoID (id du NTA), GeogName (nom du NTA), PerCapIncE (Per Capita Income Estimates). Vous pouvez nommer votre fichier nta_nyc.
+
+
+```{r}
+econ_2016acs5yr_nta <- readxl::read_excel("econ_2016acs5yr_nta.xlsx")
+nta_nyc = econ_2016acs5yr_nta %>% select(c(GeoID,GeogName,PerCapIncE))
+```
+
+
+2. Importer le fond géographique des NTA (geo_nta.gpkg). Quel est le systeme de projection du fond ?
+Dresser la carte des NTA en ne faisant apparaître que les polygônes.
+
+```{r}
+fond_nta_nyc = st_read("geo_nta.gpkg")
+st_crs(fond_nta_nyc)
+```
+Le système de projection est du "WGS84".
+
+```{r}
+## la carte des NTA
+plot(fond_nta_nyc,border=F)
+```
+
+
+3. Faites la jointure entre ces 2 tables.
+
+```{r}
+fond_nta_nyc = fond_nta_nyc %>% 
+  dplyr::left_join(
+    nta_nyc,
+    by=c("ntacode"= "GeoID"))
+```
+
+
+4. Représenter la variable de revenu par tête sous forme de carte. Pour cela, vous discrétiserez votre variable (découpage en classes). A vous de choisir la méthode qui vous semble la plus pertinente.
+
+```{r}
+plot(fond_nta_nyc["PerCapIncE"], breaks = "jenks")
+```
+Nous avons effectué le découpage de jenks. En effet, avec cette méthode, les ruptures de classe sont créées de manière à regrouper au mieux les valeurs similaires et à maximiser les différences entre les classes.
+
+5a. La carte semble-t-elle suggérer un phénomène d'autocorrélation spatiale ? A vous de le vérifier avec les outils vus en cours. Vous expliquerez chaque étape de votre démarche et commenterez vos résultats.
+Vous veillerez à retirer préalablement les valeurs manquantes pour faciliter vos traitements.
+
+```{r}
+## Retrait des valeurs manquantes
+fond_nta_nyc<-fond_nta_nyc %>% 
+  filter(!is.na(PerCapIncE))
+```
+
+
+Pour nous faire une première idée de la dimension spatiale de la distribution des revenus par tête, nous allons représenter les mêmes revenus par tête mais distribués de manière aléatoire au sein des NTA. On pourra ainsi comparer la carte de la distribution réelle des revenus par tête avec la carte de la distribution aléatoire.
+
+Pour faire cela, nous allons créer une permutation aléatoire des revenus par tête médians par `nta_nyc` avec la fonction `sample()` et à partir de la variable `PerCapIncE` du fond des NTA de New YOrk City. Ce vecteur sera stocker dans une nouvelle variable du fond des NTA nommée `PerCapIncE_ALEA`.
+
+```{r}
+set.seed(123)
+fond_nta_nyc <- fond_nta_nyc %>% mutate(PerCapIncE_ALEA = sample(PerCapIncE))
+```
+
+- Représentation des deux distributions
+
+```{r}
+par(mfrow=c(1,2))
+plot(fond_nta_nyc["PerCapIncE"], breaks = "jenks")
+plot(fond_nta_nyc["PerCapIncE_ALEA"], breaks = "jenks")
+
+```
+> Au vu  des cartes, il semblerait que la carte représentant la distribution réelle des revenus par tête est très différente de la carte d'une distribution aléatoire. Le phénomène semble spatialement corrélé.
+
+
+5b. Commentez les valeurs des LISA associées aux observations n°20 (nta 	
+Far Rockaway-Bayswater) et n°80 (nta Midtown-Midtown South)
+
+Calculons d'abord les LISA
+
+```{r}
+voisins <- poly2nb(fond_nta_nyc) #par défaut: queen = TRUE
+ponderation <- nb2listw(voisins, zero.policy = TRUE)
+
+fond_nta_nyc_lisa <- spdep::localmoran(fond_nta_nyc$PerCapIncE, ponderation, zero.policy = TRUE)
+```
+
+Comparaison des lisa
+```{r}
+print("LISA associées aux observations n°20 ")
+fond_nta_nyc_lisa[20,]
+print("LISA associées aux observations n°80 ")
+fond_nta_nyc_lisa[80,]
+```
+La comparaison des lisa montre que la pvalue des lisa nta Far Rockaway-Bayswater n'est pas significatif (p_value =5.756045e-01 > 0.05) Par contre le lisa est significatif (p_value = 1.884636e-14<0.05) De plus, puisque tous les deux nta ont des lisa de signe  positif, cela signifie qu'ils sont entourés de nta ayant des niveaux de revenus par tête similaires.
+
+
+6. Faites une carte représentant les NTA pour lesquels le LISA est particulièrement significatif. Votre carte contiendra 4 couleurs : 
+
+- en rouge les NTA de type High-High significatifs au seuil de 10%, 
+- en bleu ceux de type Low-Low significatifs au seuil de 10%, 
+- en jaune les NTA avec autocorrélation négative significative au seuil de 10% 
+- en gris les NTA non significatifs au seuil de 10%.
+
+
+Ajoutons d'abord la valeur des lisa sur le fond
+```{r}
+fond_nta_nyc <- fond_nta_nyc %>% 
+  mutate(
+    LISA = fond_nta_nyc_lisa[,"Ii"],
+    p_value_lisa = fond_nta_nyc_lisa[,5]
+  )
+```
+
+```{r}
+plot(fond_nta_nyc["p_value_lisa"], breaks = c(0,0.01,0.05,0.1,1))
+```
+
+
+```{r eval=FALSE, include=FALSE}
+match_palette <- function(patterns, classifications, colors){
+  classes_present <- base::unique(patterns)
+  mat <- matrix(c(classifications,colors), ncol = 2)
+  logi <- classifications %in% classes_present
+  pre_col <- matrix(mat[logi], ncol = 2)
+  pal <- pre_col[,2]
+  return(pal)
+}
+
+lisa_map <- function(df, lisa, alpha = .01) {
+  clusters <- lisa_clusters(lisa,cutoff = alpha)
+  labels <- lisa_labels(lisa)
+  pvalue <- lisa_pvalues(lisa)
+  colors <- lisa_colors(lisa)
+  lisa_patterns <- labels[clusters+1]
+
+  pal <- match_palette(lisa_patterns,labels,colors)
+  labels <- labels[labels %in% lisa_patterns]
+
+  df["lisa_clusters"] <- clusters
+  tm_shape(df) +
+    tm_fill("lisa_clusters",labels = labels, palette = pal,style = "cat")
+}
+
+```
+
+
+```{r}
+library(tmap)
+library(RColorBrewer)
+library(rgeoda)
+lisa_map(fond_nta_nyc, fond_nta_nyc_lisa) +
+  tm_borders() +
+  tm_layout(title = "Local Moran Cluster Map of Donatns",legend.outside = TRUE)
+```
+
+
+Un bonus sera accordé si vous faites la carte en dynamique (mapview ou leaflet)
+
+```{r}
+library(mapview)
+mapview(
+  fond_nta_nyc,
+  z=c("p_value_lisa"),
+  alpha.regions=0.1,
+  layer.name="Revenu_median",
+  label="libelle"
+)
+```
+
+## Exercice 2 (non prioritaire, à faire dans un second temps)
+
+0. Importer les fonds geo_nta.gpkg et geo_boro.gpkg.
+
+```{r}
+geo_nta = st_read("geo_nta.gpkg")
+geo_boro = st_read("geo_boro.gpkg")
+```
+
+
+1. On souhaite savoir dans quel(s) quartier(s) ("Borough") appartient chaque NTA (variable boro_name)? Pour répondre à cette question vous ferez une intersection entre les fonds geo_nta.gpkg et geo_boro.gpkg. 
+
+```{r}
+intersection = st_intersects(geo_boro, geo_nta)
+```
+
+
+2. En utilisant la question précédente, combien y a t'il de NTA à cheval sur plusieurs quartiers ?
+
+```{r}
+geo_nta[which(lengths(intersection)>0),]
+```
+
+
+3. Récupérez les noms de ces NTA à cheval sur plusieurs quartiers (on ne vous demande pas d'afficher quels sont les quartiers sur lesquels ils sont présents).
+
+```{r}
+noms_nta = unique(geo_nta$ntaname)
+```
+
+
+4. Prenez un de ces NTA au choix et donner les quartiers sur lesquels il se trouve.
+
+```{r}
+choix = noms_nta[as.integer(runif(1,1,length(noms_nta)))] ## Nous avons choisi aléatoirement un nom
+quartiers = st_intersects(geo_nta %>% filter(ntaname ==choix),geo_boro)
+
+geo_boro %>% filter(boro_code %in% quartiers)
+
+```
+
+
